@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "purapelle.integration.v1";
+  const canManagePatients = document.body.dataset.canManagePatients === "true";
   const pageTitles = {
     dashboard: "Visão geral",
     patients: "Pacientes",
@@ -9,13 +9,7 @@
     timeline: "Prontuário",
     gallery: "Evolução visual",
   };
-  const demoPatients = [
-    { id: "demo-ana", name: "Ana Carolina Mendes", birthDate: "1988-04-12", phone: "(11) 99912-3456", email: "ana.mendes@email.com", allergies: "Nenhuma conhecida", medications: "Nenhum", conditions: "", pregnant: false, notes: "", createdAt: "2025-01-10", demo: true },
-    { id: "demo-julia", name: "Julia Fernandes Costa", birthDate: "1992-09-23", phone: "(11) 99876-5432", email: "julia.costa@email.com", allergies: "Látex", medications: "Nenhum", conditions: "", pregnant: false, notes: "", createdAt: "2025-02-14", demo: true },
-    { id: "demo-mariana", name: "Mariana Oliveira Lima", birthDate: "1985-06-07", phone: "(11) 99765-4321", email: "mariana.lima@email.com", allergies: "", medications: "", conditions: "", pregnant: false, notes: "", createdAt: "2025-03-02", demo: true },
-  ];
-
-  let state;
+  let state = { patients: [], procedures: [], photos: [] };
   let canvasPoints = [];
   let toastTimer;
   const $ = (selector) => document.querySelector(selector);
@@ -32,36 +26,35 @@
     return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleDateString("pt-BR");
   };
 
-  function loadState() {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (!saved) {
-        state = { patients: demoPatients, procedures: [], photos: [] };
-        saveState();
-        return;
-      }
-      const parsed = JSON.parse(saved);
-      state = {
-        patients: Array.isArray(parsed.patients) ? parsed.patients : [],
-        procedures: Array.isArray(parsed.procedures) ? parsed.procedures : [],
-        photos: Array.isArray(parsed.photos) ? parsed.photos : [],
-      };
-    } catch (error) {
-      console.error("Não foi possível ler os dados salvos localmente.", error);
-      state = { patients: demoPatients, procedures: [], photos: [] };
-      showToast("Não foi possível ler os dados salvos neste navegador.", true);
+  async function api(url, options = {}) {
+    const headers = { Accept: "application/json", ...options.headers };
+    if (options.body) {
+      headers["Content-Type"] = "application/json";
     }
+    if (!["GET", "HEAD", "OPTIONS", "TRACE"].includes((options.method || "GET").toUpperCase())) {
+      headers["X-CSRFToken"] = document.cookie.split("; ").find((cookie) => cookie.startsWith("csrftoken="))?.split("=")[1] || "";
+    }
+    const response = await fetch(url, { ...options, headers, credentials: "same-origin" });
+    if (response.status === 401) {
+      window.location.assign("/login/");
+      throw new Error("Sua sessão expirou. Entre novamente.");
+    }
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Não foi possível concluir a operação.");
+    return result;
   }
 
-  function saveState() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      return true;
-    } catch (error) {
-      console.error("Não foi possível salvar os dados localmente.", error);
-      showToast("Armazenamento do navegador cheio ou indisponível. Remova fotos e tente novamente.", true);
-      return false;
-    }
+  async function loadState() {
+    const [patients, procedures, photos] = await Promise.all([
+      api("/api/patients/"),
+      api("/api/procedures/"),
+      api("/api/photos/"),
+    ]);
+    state = {
+      patients: patients.patients,
+      procedures: procedures.procedures,
+      photos: photos.photos,
+    };
   }
 
   function showToast(message, error = false) {
@@ -100,7 +93,7 @@
         <td>${escapeHTML(patient.phone || patient.email || "—")}</td>
         <td><span class="status-pill ${needsReview ? "status-review" : "status-ok"}">${needsReview ? "Revisar" : "Atualizada"}</span></td>
         <td>${formatDate(patient.createdAt)}</td>
-        <td><button class="row-action" data-review="${escapeHTML(patient.id)}">${needsReview ? "Revisar" : "Abrir"}</button></td>
+        <td>${canManagePatients ? `<button class="row-action" data-review="${escapeHTML(patient.id)}">${needsReview ? "Revisar" : "Abrir"}</button>` : ""}</td>
       </tr>`;
     }).join("");
     $("#empty-patients").hidden = filtered.length !== 0;
@@ -116,8 +109,7 @@
     const alerts = state.patients.filter((patient) => !patient.reviewedAt);
     $("#stat-alerts").textContent = alerts.length;
     $("#alert-count").textContent = alerts.length;
-    $("#demo-notice").hidden = !state.patients.some((patient) => patient.demo);
-    $("#alert-list").innerHTML = alerts.slice(0, 5).map((patient) => `<div class="alert-item"><span class="activity-mark">!</span><div class="alert-copy"><div><strong>${escapeHTML(patient.name)}</strong><small>Anamnese precisa ser revisada</small></div><button class="alert-link" data-review="${escapeHTML(patient.id)}">Abrir</button></div></div>`).join("") || '<div class="empty-inline">Nenhuma anamnese pendente.</div>';
+    $("#alert-list").innerHTML = alerts.slice(0, 5).map((patient) => `<div class="alert-item"><span class="activity-mark">!</span><div class="alert-copy"><div><strong>${escapeHTML(patient.name)}</strong><small>Anamnese precisa ser revisada</small></div>${canManagePatients ? `<button class="alert-link" data-review="${escapeHTML(patient.id)}">Abrir</button>` : ""}</div></div>`).join("") || '<div class="empty-inline">Nenhuma anamnese pendente.</div>';
     const recent = [...state.procedures].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
     $("#recent-activity").innerHTML = recent.map((record) => {
       const patient = state.patients.find((item) => item.id === record.patientId);
@@ -146,7 +138,7 @@
     }).join("") || '<div class="empty-inline photo-empty">Nenhuma fotografia adicionada ainda.</div>';
   }
 
-  function reviewPatient(id) {
+  async function reviewPatient(id) {
     const patient = state.patients.find((item) => item.id === id);
     if (!patient) return;
     const summary = [
@@ -158,10 +150,14 @@
       `Observações: ${patient.notes || "nenhuma"}`,
     ].join("\n");
     if (window.confirm(`${summary}\n\nConfirma que a anamnese foi revisada?`)) {
-      patient.reviewedAt = localDate();
-      if (saveState()) {
+      try {
+        await api(`/api/patients/${encodeURIComponent(id)}/review/`, { method: "PATCH" });
+        await loadState();
         renderAll();
         showToast("Anamnese marcada como revisada.");
+      } catch (error) {
+        console.error("Não foi possível atualizar a anamnese.", error);
+        showToast(error.message, true);
       }
     }
   }
@@ -267,9 +263,9 @@
     event.preventDefault();
     showPage(button.dataset.page || button.dataset.go);
   }));
-  $("#new-patient-button").addEventListener("click", () => $("#patient-dialog").showModal());
-  $("#close-dialog").addEventListener("click", () => $("#patient-dialog").close());
-  $("#cancel-dialog").addEventListener("click", () => $("#patient-dialog").close());
+  $("#new-patient-button")?.addEventListener("click", () => $("#patient-dialog").showModal());
+  $("#close-dialog")?.addEventListener("click", () => $("#patient-dialog").close());
+  $("#cancel-dialog")?.addEventListener("click", () => $("#patient-dialog").close());
   $("#patient-search").addEventListener("input", (event) => renderPatientRows(event.target.value));
   $("#patient-rows").addEventListener("click", (event) => {
     const button = event.target.closest("[data-review]");
@@ -279,12 +275,11 @@
     const button = event.target.closest("[data-review]");
     if (button) reviewPatient(button.dataset.review);
   });
-  $("#patient-form").addEventListener("submit", (event) => {
+  $("#patient-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
     const patient = {
-      id: crypto.randomUUID(),
       name: data.get("name").trim(),
       birthDate: data.get("birthDate"),
       phone: data.get("phone").trim(),
@@ -294,24 +289,25 @@
       conditions: data.get("conditions").trim(),
       pregnant: data.has("pregnant"),
       notes: data.get("notes").trim(),
-      createdAt: localDate(),
     };
-    state.patients.unshift(patient);
-    if (!saveState()) {
-      state.patients.shift();
-      return;
+    try {
+      await api("/api/patients/", { method: "POST", body: JSON.stringify(patient) });
+      await loadState();
+      form.reset();
+      $("#patient-dialog").close();
+      renderAll();
+      showPage("patients");
+      showToast("Paciente cadastrada com sucesso.");
+    } catch (error) {
+      console.error("Não foi possível cadastrar a paciente.", error);
+      showToast(error.message, true);
     }
-    form.reset();
-    $("#patient-dialog").close();
-    renderAll();
-    showPage("patients");
-    showToast("Paciente cadastrada com sucesso.");
   });
-  $("#procedure-form").addEventListener("submit", (event) => {
+  $("#procedure-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
     const record = {
-      id: crypto.randomUUID(),
       patientId: data.get("patientId"),
       category: data.get("category"),
       procedure: data.get("procedure").trim(),
@@ -323,17 +319,19 @@
       notes: data.get("notes").trim(),
       points: canvasPoints.map((point) => ({ ...point })),
     };
-    state.procedures.unshift(record);
-    if (!saveState()) {
-      state.procedures.shift();
-      return;
+    try {
+      await api("/api/procedures/", { method: "POST", body: JSON.stringify(record) });
+      await loadState();
+      form.reset();
+      $("#procedure-date").value = localDate();
+      canvasPoints = [];
+      drawFace();
+      renderAll();
+      showToast("Procedimento registrado no prontuário.");
+    } catch (error) {
+      console.error("Não foi possível registrar o procedimento.", error);
+      showToast(error.message, true);
     }
-    event.currentTarget.reset();
-    $("#procedure-date").value = localDate();
-    canvasPoints = [];
-    drawFace();
-    renderAll();
-    showToast("Procedimento registrado no prontuário.");
   });
   $("#face-canvas").addEventListener("click", (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -358,18 +356,14 @@
     }
     try {
       const photo = {
-        id: crypto.randomUUID(),
         patientId: data.get("patientId"),
         stage: data.get("stage"),
         date: data.get("date"),
         caption: data.get("caption").trim(),
         image: await resizeImage(file),
       };
-      state.photos.unshift(photo);
-      if (!saveState()) {
-        state.photos.shift();
-        return;
-      }
+      await api("/api/photos/", { method: "POST", body: JSON.stringify(photo) });
+      await loadState();
       form.reset();
       $("#photo-date").value = localDate();
       renderGallery();
@@ -389,9 +383,14 @@
     if (active) showPage(active.id.replace("page-", ""));
   });
 
-  loadState();
-  renderAll();
-  $("#procedure-date").value = localDate();
-  $("#photo-date").value = localDate();
-  resizeCanvas();
+  loadState().then(() => {
+    $("#app-content").hidden = false;
+    renderAll();
+    $("#procedure-date").value = localDate();
+    $("#photo-date").value = localDate();
+    resizeCanvas();
+  }).catch((error) => {
+    console.error("Não foi possível carregar os dados da clínica.", error);
+    showToast(error.message || "Não foi possível carregar os dados da clínica.", true);
+  });
 })();
