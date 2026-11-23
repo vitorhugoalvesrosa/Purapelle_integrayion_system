@@ -19,6 +19,17 @@ if not SECRET_KEY:
         raise RuntimeError("Defina DJANGO_SECRET_KEY para executar fora do modo de desenvolvimento.")
     SECRET_KEY = "django-insecure-local-development-key-change-before-deployment"
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
+csrf_trusted_origins = os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS")
+if csrf_trusted_origins is None:
+    csrf_trusted_origins = (
+        "http://localhost:8000,http://127.0.0.1:8000,"
+        "https://localhost:8000,https://127.0.0.1:8000"
+    )
+    codespace_name = os.environ.get("CODESPACE_NAME")
+    forwarding_domain = os.environ.get("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN")
+    if codespace_name and forwarding_domain:
+        csrf_trusted_origins += f",https://{codespace_name}-8000.{forwarding_domain}"
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in csrf_trusted_origins.split(",") if origin.strip()]
 DATA_UPLOAD_MAX_MEMORY_SIZE = 3_000_000
 
 INSTALLED_APPS = [

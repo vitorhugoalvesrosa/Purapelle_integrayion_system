@@ -20,8 +20,7 @@
       <button class="nav-item active" data-page="dashboard"><span class="nav-icon">⌂</span> Visão geral</button>
       <button class="nav-item" data-page="patients"><span class="nav-icon">♙</span> Pacientes</button>
       <button class="nav-item" data-page="procedures"><span class="nav-icon">✳</span> Procedimentos</button>
-      <button class="nav-item" data-page="timeline"><span class="nav-icon">◷</span> Prontuário</button>
-      <button class="nav-item" data-page="gallery"><span class="nav-icon">▧</span> Evolução visual</button>
+      <button class="nav-item" data-page="appointments"><span class="nav-icon">◷</span> Agenda</button>
     </nav>
     <div class="sidebar-bottom">
       <div class="doctor-avatar">{{ request.user.username|slice:":2"|upper }}</div>
@@ -49,18 +48,63 @@
           <article class="stat-card"><div class="stat-top"><span>Anamneses para revisar</span><span class="stat-icon alert-icon">!</span></div><strong id="stat-alerts">0</strong><small class="stat-note">sem avaliação recente</small></article>
         </div>
         <div class="dashboard-grid">
-          <section class="panel"><div class="panel-heading"><div><h2>Atividade recente</h2><p>Últimos registros da clínica</p></div><button class="text-button" data-go="timeline">Ver prontuários →</button></div><div id="recent-activity" class="activity-list"></div></section>
+          <section class="panel"><div class="panel-heading"><div><h2>Atividade recente</h2><p>Últimos registros da clínica</p></div><button class="text-button" data-go="patients">Ver pacientes →</button></div><div id="recent-activity" class="activity-list"></div></section>
           <section class="panel"><div class="panel-heading"><div><h2>Atenção à anamnese</h2><p>Pacientes que precisam de revisão</p></div><span class="count-pill" id="alert-count">0</span></div><div id="alert-list" class="alert-list"></div></section>
         </div>
       </section>
 
       <section id="page-patients" class="page">
-        <div class="page-heading"><div><p class="eyebrow">GESTÃO DE PACIENTES</p><h1>Pacientes</h1><p class="muted">Dados pessoais e informações de anamnese.</p></div>{% if can_manage_patients %}<button id="new-patient-button" class="button button-dark">＋ Cadastrar paciente</button>{% endif %}</div>
-        <div class="panel">
-          <div class="panel-heading patient-toolbar"><div><h2>Base de pacientes</h2><p id="patient-total">0 pacientes cadastradas</p></div><input id="patient-search" class="search-input" type="search" placeholder="Buscar paciente..." aria-label="Buscar paciente"></div>
-          <div class="table-wrap"><table><thead><tr><th>PACIENTE</th><th>CONTATO</th><th>ANAMNESE</th><th>CADASTRO</th><th></th></tr></thead><tbody id="patient-rows"></tbody></table></div>
-          <div id="empty-patients" class="empty-state" hidden>Nenhuma paciente encontrada.</div>
+        <div id="patient-list-view">
+          <div class="page-heading"><div><p class="eyebrow">GESTÃO DE PACIENTES</p><h1>Pacientes</h1><p class="muted">Abra a ficha para consultar prontuário, anamnese e evolução visual.</p></div>{% if can_manage_patients %}<button id="new-patient-button" class="button button-dark">＋ Cadastrar paciente</button>{% endif %}</div>
+          <div class="panel">
+            <div class="panel-heading patient-toolbar"><div><h2>Base de pacientes</h2><p id="patient-total">0 pacientes cadastradas</p></div><input id="patient-search" class="search-input" type="search" placeholder="Buscar paciente..." aria-label="Buscar paciente"></div>
+            <div class="table-wrap"><table><thead><tr><th>PACIENTE</th><th>CONTATO</th><th>ANAMNESE</th><th>CADASTRO</th><th></th></tr></thead><tbody id="patient-rows"></tbody></table></div>
+            <div id="empty-patients" class="empty-state" hidden>Nenhuma paciente encontrada.</div>
+          </div>
         </div>
+        <section id="patient-detail-view" hidden>
+          <div class="page-heading">
+            <div><button id="back-to-patients" class="text-button">← Voltar aos pacientes</button><p class="eyebrow">FICHA DA PACIENTE</p><h1 id="patient-detail-name"></h1><p id="patient-detail-subtitle" class="muted"></p></div>
+            <button id="print-patient-record" class="button button-outline">Imprimir prontuário</button>
+          </div>
+          <div id="patient-profile" class="panel patient-profile"></div>
+          <div class="detail-tabs" role="tablist" aria-label="Seções da ficha">
+            <button class="detail-tab active" type="button" data-patient-tab="record">Prontuário</button>
+            <button class="detail-tab" type="button" data-patient-tab="photos">Evolução visual</button>
+          </div>
+          <section id="patient-record-panel" class="panel">
+            <div class="panel-heading"><div><h2>Histórico clínico</h2><p>Atendimentos e procedimentos vinculados a esta paciente.</p></div></div>
+            <div id="patient-timeline" class="timeline-list"></div>
+          </section>
+          <section id="patient-photos-panel" class="patient-photos-panel" hidden>
+            <form id="photo-form" class="panel photo-form"><h2>Adicionar registro fotográfico</h2><input name="patientId" id="photo-patient" type="hidden"><div class="form-grid">
+              <label class="field">Etapa<select name="stage" required><option value="Antes">Antes</option><option value="Depois">Depois</option></select></label>
+              <label class="field">Data<input name="date" type="date" id="photo-date" required></label>
+              <label class="field">Atendimento vinculado<select name="appointmentId" id="photo-appointment"><option value="">Sem atendimento específico</option></select></label>
+              <label class="field">Fotografia<input name="image" type="file" accept="image/*" required></label>
+              <label class="field full">Legenda<input name="caption" placeholder="Opcional"></label>
+            </div><button class="button button-dark" type="submit">Adicionar à evolução</button></form>
+            <div id="patient-gallery-grid" class="gallery-grid"></div>
+          </section>
+        </section>
+      </section>
+
+      <section id="page-appointments" class="page">
+        <div class="page-heading"><div><p class="eyebrow">ORGANIZAÇÃO DA CLÍNICA</p><h1>Agenda de atendimentos</h1><p class="muted">Agende consultas e acompanhe os registros vinculados a cada atendimento.</p></div></div>
+        <form id="appointment-form" class="panel appointment-form">
+          <div class="panel-heading"><div><h2 id="appointment-form-title">Novo atendimento</h2><p>O atendimento ficará vinculado à ficha da paciente.</p></div></div>
+          <div class="form-grid">
+            <label class="field">Paciente<select name="patientId" id="appointment-patient" required></select></label>
+            <label class="field">Atendimento<input name="service" required maxlength="200" placeholder="Ex.: Avaliação, retorno ou procedimento"></label>
+            <label class="field">Data e horário<input name="scheduledAt" id="appointment-date" type="datetime-local" required></label>
+            <label class="field full">Observações<textarea name="notes" rows="2" placeholder="Orientações ou observações para o atendimento"></textarea></label>
+          </div>
+          <div class="form-actions"><button class="button button-dark" id="appointment-submit" type="submit">Agendar atendimento</button><button class="button button-outline" id="cancel-appointment-edit" type="button" hidden>Cancelar edição</button></div>
+        </form>
+        <section class="panel appointment-panel">
+          <div class="panel-heading"><div><h2>Atendimentos do dia</h2><p>Procedimentos e fotografias associados aparecem na ficha do atendimento.</p></div><label class="date-filter">Data<input id="appointment-day" type="date" aria-label="Filtrar atendimentos por data"></label></div>
+          <div id="appointment-list" class="appointment-list"></div>
+        </section>
       </section>
 
       <section id="page-procedures" class="page">
@@ -68,6 +112,7 @@
         <form id="procedure-form" class="form-layout">
           <section class="panel form-panel"><h2>Dados do atendimento</h2><div class="form-grid">
             <label class="field full">Paciente<select name="patientId" id="procedure-patient" required></select></label>
+            <label class="field full">Atendimento vinculado<select name="appointmentId" id="procedure-appointment"><option value="">Sem atendimento específico</option></select></label>
             <label class="field">Categoria<select name="category" id="procedure-category" required><option value="">Selecione</option><option>Botox</option><option>Preenchimento</option><option>Bioestimuladores</option><option>Tecnologias</option></select></label>
             <label class="field">Procedimento<input name="procedure" required placeholder="Ex.: Toxina botulínica"></label>
             <label class="field">Produto<input name="product" placeholder="Nome comercial"></label>
@@ -81,22 +126,6 @@
         </form>
       </section>
 
-      <section id="page-timeline" class="page">
-        <div class="page-heading"><div><p class="eyebrow">HISTÓRICO CLÍNICO</p><h1>Prontuário</h1><p class="muted">Linha do tempo de procedimentos por paciente.</p></div><button id="print-timeline" class="button button-outline">Imprimir prontuário</button></div>
-        <div class="panel"><div class="panel-heading"><div><h2>Linha do tempo</h2><p>Selecione uma paciente para consultar o histórico.</p></div><select id="timeline-patient" class="select-compact" aria-label="Selecionar paciente"></select></div><div id="timeline-list" class="timeline-list"></div></div>
-      </section>
-
-      <section id="page-gallery" class="page">
-        <div class="page-heading"><div><p class="eyebrow">ACOMPANHAMENTO</p><h1>Evolução visual</h1><p class="muted">Fotografias de antes e depois organizadas por paciente.</p></div></div>
-        <form id="photo-form" class="panel photo-form"><h2>Adicionar registro fotográfico</h2><div class="form-grid">
-          <label class="field">Paciente<select name="patientId" id="photo-patient" required></select></label>
-          <label class="field">Etapa<select name="stage" required><option value="Antes">Antes</option><option value="Depois">Depois</option></select></label>
-          <label class="field">Data<input name="date" type="date" id="photo-date" required></label>
-          <label class="field">Fotografia<input name="image" type="file" accept="image/*" required></label>
-          <label class="field full">Legenda<input name="caption" placeholder="Opcional"></label>
-        </div><button class="button button-dark" type="submit">Adicionar à galeria</button></form>
-        <div class="gallery-heading"><h2>Registros</h2><select id="gallery-patient" class="select-compact" aria-label="Filtrar galeria por paciente"></select></div><div id="gallery-grid" class="gallery-grid"></div>
-      </section>
     </div>
   </main>
 

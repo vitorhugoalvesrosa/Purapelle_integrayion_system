@@ -21,9 +21,30 @@ class Patient(models.Model):
         ordering = ["-created_at"]
 
 
+class Appointment(models.Model):
+    class Status(models.TextChoices):
+        SCHEDULED = "scheduled", "Agendado"
+        COMPLETED = "completed", "Realizado"
+        CANCELLED = "cancelled", "Cancelado"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="appointments")
+    scheduled_at = models.DateTimeField()
+    service = models.CharField(max_length=200)
+    notes = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.SCHEDULED)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["scheduled_at", "created_at"]
+
+
 class Procedure(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="procedures")
+    appointment = models.ForeignKey(
+        Appointment, on_delete=models.SET_NULL, related_name="procedures", null=True, blank=True
+    )
     category = models.CharField(max_length=100)
     name = models.CharField(max_length=200)
     product = models.CharField(max_length=200, blank=True)
@@ -42,6 +63,9 @@ class Procedure(models.Model):
 class Photo(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="photos")
+    appointment = models.ForeignKey(
+        Appointment, on_delete=models.SET_NULL, related_name="photos", null=True, blank=True
+    )
     stage = models.CharField(max_length=10)
     date = models.DateField()
     caption = models.CharField(max_length=250, blank=True)

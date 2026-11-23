@@ -7,13 +7,14 @@ from uuid import UUID
 
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
+from django.utils.dateparse import parse_datetime
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 
-from .models import Patient, Photo, Procedure
+from .models import Appointment, Patient, Photo, Procedure
 
 
 def is_clinic_admin(user):
@@ -83,6 +84,7 @@ def _procedure_json(procedure):
     return {
         "id": str(procedure.id),
         "patientId": str(procedure.patient_id),
+        "appointmentId": str(procedure.appointment_id) if procedure.appointment_id else "",
         "category": procedure.category,
         "procedure": procedure.name,
         "product": procedure.product,
@@ -99,11 +101,47 @@ def _photo_json(photo):
     return {
         "id": str(photo.id),
         "patientId": str(photo.patient_id),
+        "appointmentId": str(photo.appointment_id) if photo.appointment_id else "",
         "stage": photo.stage,
         "date": photo.date.isoformat(),
         "caption": photo.caption,
         "image": photo.image,
     }
+
+
+def _appointment_json(appointment):
+    return {
+        "id": str(appointment.id),
+        "patientId": str(appointment.patient_id),
+        "patientName": appointment.patient.name,
+        "scheduledAt": timezone.localtime(appointment.scheduled_at).isoformat(),
+        "service": appointment.service,
+        "notes": appointment.notes,
+        "status": appointment.status,
+    }
+
+
+def _parse_scheduled_at(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        scheduled_at = parse_datetime(value)
+    except ValueError:
+        return None
+    if scheduled_at and timezone.is_naive(scheduled_at):
+        scheduled_at = timezone.make_aware(scheduled_at)
+    return scheduled_at
+
+
+def _appointment_for_patient(appointment_id, patient):
+    if appointment_id is None or appointment_id == "":
+        if Appointment.objects.filter(patient=patient).exclude(status=Appointment.Status.CANCELLED).exists():
+            return False
+        return None
+    try:
+        return Appointment.objects.get(pk=UUID(appointment_id), patient=patient)
+    except (Appointment.DoesNotExist, TypeError, ValueError):
+        return False
 
 
 @require_http_methods(["GET", "POST"])
@@ -159,6 +197,75 @@ def patient_review_api(request, patient_id):
 
 
 @require_http_methods(["GET", "POST"])
+def appointments_api(request):
+    if not request.user.is_authenticated:
+        return _unauthorized()
+    if request.method == "GET":
+        appointments = Appointment.objects.select_related("patient")
+        return JsonResponse({"appointments": [_appointment_json(item) for item in appointments]})
+
+    data = _json_body(request)
+    if data is None:
+        return JsonResponse({"error": "Dados inválidos."}, status=400)
+    try:
+        patient = Patient.objects.get(pk=UUID(data.get("patientId", "")))
+    except (Patient.DoesNotExist, TypeError, ValueError):
+        return JsonResponse({"error": "Paciente inválida."}, status=400)
+    scheduled_at = _parse_scheduled_at(data.get("scheduledAt"))
+    service = data.get("service")
+    if scheduled_at is None or not isinstance(service, str) or not service.strip():
+        return JsonResponse({"error": "Informe o serviço, a data e o horário do atendimento."}, status=400)
+    appointment = Appointment(
+        patient=patient,
+        scheduled_at=scheduled_at,
+        service=service.strip(),
+        notes=str(data.get("notes") or "").strip(),
+    )
+    try:
+        appointment.full_clean()
+    except ValidationError as error:
+        return JsonResponse({"error": error.message_dict}, status=400)
+    appointment.save()
+    return JsonResponse({"appointment": _appointment_json(appointment)}, status=201)
+
+
+@require_http_methods(["PATCH"])
+def appointment_detail_api(request, appointment_id):
+    if not request.user.is_authenticated:
+        return _unauthorized()
+    try:
+        appointment = Appointment.objects.select_related("patient").get(pk=UUID(appointment_id))
+    except (Appointment.DoesNotExist, ValueError):
+        return JsonResponse({"error": "Atendimento não encontrado."}, status=404)
+    data = _json_body(request)
+    if data is None or not data or not set(data).issubset({"status", "scheduledAt", "service", "notes"}):
+        return JsonResponse({"error": "Informe dados válidos para atualizar o atendimento."}, status=400)
+    if "status" in data:
+        if data["status"] not in Appointment.Status.values:
+            return JsonResponse({"error": "Status de atendimento inválido."}, status=400)
+        appointment.status = data["status"]
+    if "scheduledAt" in data:
+        scheduled_at = _parse_scheduled_at(data["scheduledAt"])
+        if scheduled_at is None:
+            return JsonResponse({"error": "Data e horário do atendimento inválidos."}, status=400)
+        appointment.scheduled_at = scheduled_at
+    if "service" in data:
+        if not isinstance(data["service"], str) or not data["service"].strip():
+            return JsonResponse({"error": "Informe o serviço do atendimento."}, status=400)
+        appointment.service = data["service"].strip()
+    if "notes" in data:
+        if not isinstance(data["notes"], str):
+            return JsonResponse({"error": "Observações inválidas."}, status=400)
+        appointment.notes = data["notes"].strip()
+    try:
+        appointment.full_clean()
+    except ValidationError as error:
+        return JsonResponse({"error": error.message_dict}, status=400)
+    appointment.save()
+    return JsonResponse({"appointment": _appointment_json(appointment)})
+
+
+@require_http_methods(["GET", "POST"])
 def procedures_api(request):
     if not request.user.is_authenticated:
         return _unauthorized()
@@ -176,6 +283,9 @@ def procedures_api(request):
         expiry = date.fromisoformat(data["expiry"]) if data.get("expiry") else None
     except (Patient.DoesNotExist, TypeError, ValueError):
         return JsonResponse({"error": "Paciente ou data inválida."}, status=400)
+    appointment = _appointment_for_patient(data.get("appointmentId"), patient)
+    if appointment is False:
+        return JsonResponse({"error": "Selecione um atendimento desta paciente."}, status=400)
     required = ("category", "procedure")
     if any(not isinstance(data.get(field), str) or not data[field].strip() for field in required):
         return JsonResponse({"error": "Informe a categoria e o procedimento."}, status=400)
@@ -191,6 +301,7 @@ def procedures_api(request):
         return JsonResponse({"error": "Pontos do mapa facial inválidos."}, status=400)
     record = Procedure(
         patient=patient,
+        appointment=appointment,
         category=data["category"].strip(),
         name=data["procedure"].strip(),
         product=str(data.get("product") or "").strip(),
@@ -224,6 +335,9 @@ def photos_api(request):
         photo_date = date.fromisoformat(data.get("date", ""))
     except (Patient.DoesNotExist, TypeError, ValueError):
         return JsonResponse({"error": "Paciente ou data inválida."}, status=400)
+    appointment = _appointment_for_patient(data.get("appointmentId"), patient)
+    if appointment is False:
+        return JsonResponse({"error": "Selecione um atendimento desta paciente."}, status=400)
     stage = data.get("stage")
     image = data.get("image")
     if stage not in ("Antes", "Depois") or not isinstance(image, str) or len(image) > 2_800_000:
@@ -237,6 +351,7 @@ def photos_api(request):
         return JsonResponse({"error": "Conteúdo da fotografia inválido."}, status=400)
     photo = Photo(
         patient=patient,
+        appointment=appointment,
         stage=stage,
         date=photo_date,
         caption=str(data.get("caption") or "").strip(),

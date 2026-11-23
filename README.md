@@ -8,6 +8,10 @@ O painel requer autenticação. Os perfis disponíveis são:
 - `gerente`: gerenciamento de pacientes e dados clínicos.
 - `operador`: consulta de pacientes e registro de procedimentos/fotografias.
 
+## Pacientes e agenda
+
+O prontuário e a evolução visual ficam na ficha aberta a partir da tela de pacientes. A agenda permite criar e atualizar atendimentos por data; procedimentos e fotografias podem ser associados a um atendimento e aparecem vinculados no histórico da paciente.
+
 Para configurar uma instalação nova, aplique as migrações e crie as três contas:
 
 ```sh

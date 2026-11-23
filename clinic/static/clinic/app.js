@@ -6,11 +6,12 @@
     dashboard: "Visão geral",
     patients: "Pacientes",
     procedures: "Procedimentos",
-    timeline: "Prontuário",
-    gallery: "Evolução visual",
+    appointments: "Agenda",
   };
-  let state = { patients: [], procedures: [], photos: [] };
+  let state = { patients: [], appointments: [], procedures: [], photos: [] };
   let canvasPoints = [];
+  let activePatientId = "";
+  let editingAppointmentId = "";
   let toastTimer;
   const $ = (selector) => document.querySelector(selector);
   const escapeHTML = (value = "") => String(value).replace(/[&<>"']/g, (char) => ({
@@ -20,11 +21,24 @@
     const adjusted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
     return adjusted.toISOString().slice(0, 10);
   };
+  const localDateTime = (date = new Date()) => {
+    const adjusted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return adjusted.toISOString().slice(0, 16);
+  };
   const formatDate = (value) => {
     if (!value) return "—";
     const parsed = new Date(`${value}T12:00:00`);
     return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleDateString("pt-BR");
   };
+  const formatDateTime = (value) => {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+  };
+  const appointmentStatus = (status) => ({
+    scheduled: "Agendado",
+    completed: "Realizado",
+    cancelled: "Cancelado",
+  })[status] || "Agendado";
 
   async function api(url, options = {}) {
     const headers = { Accept: "application/json", ...options.headers };
@@ -45,13 +59,15 @@
   }
 
   async function loadState() {
-    const [patients, procedures, photos] = await Promise.all([
+    const [patients, appointments, procedures, photos] = await Promise.all([
       api("/api/patients/"),
+      api("/api/appointments/"),
       api("/api/procedures/"),
       api("/api/photos/"),
     ]);
     state = {
       patients: patients.patients,
+      appointments: appointments.appointments,
       procedures: procedures.procedures,
       photos: photos.photos,
     };
@@ -72,8 +88,7 @@
     document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.page === page));
     $("#breadcrumb-current").textContent = pageTitles[page];
     if (page === "procedures") drawFace();
-    if (page === "timeline") renderTimeline();
-    if (page === "gallery") renderGallery();
+    if (page === "appointments") renderAppointments();
   }
 
   function patientOptions(select, includeAll = false) {
@@ -93,10 +108,19 @@
         <td>${escapeHTML(patient.phone || patient.email || "—")}</td>
         <td><span class="status-pill ${needsReview ? "status-review" : "status-ok"}">${needsReview ? "Revisar" : "Atualizada"}</span></td>
         <td>${formatDate(patient.createdAt)}</td>
-        <td>${canManagePatients ? `<button class="row-action" data-review="${escapeHTML(patient.id)}">${needsReview ? "Revisar" : "Abrir"}</button>` : ""}</td>
+        <td class="row-actions"><button class="row-action" data-open-patient="${escapeHTML(patient.id)}">Abrir ficha</button>${canManagePatients && needsReview ? `<button class="row-action" data-review="${escapeHTML(patient.id)}">Revisar anamnese</button>` : ""}</td>
       </tr>`;
     }).join("");
     $("#empty-patients").hidden = filtered.length !== 0;
+  }
+
+  function appointmentOptions(select, patientId) {
+    const current = select.value;
+    const appointments = state.appointments.filter((item) => item.patientId === patientId && item.status !== "cancelled");
+    select.required = appointments.length > 0;
+    const placeholder = appointments.length ? "Selecione o atendimento" : "Sem atendimento específico";
+    select.innerHTML = `<option value="">${placeholder}</option>${appointments.map((item) => `<option value="${escapeHTML(item.id)}">${escapeHTML(formatDateTime(item.scheduledAt))} · ${escapeHTML(item.service)}</option>`).join("")}`;
+    if (appointments.some((item) => item.id === current)) select.value = current;
   }
 
   function renderDashboard() {
@@ -118,24 +142,96 @@
   }
 
   function renderTimeline() {
-    const select = $("#timeline-patient");
-    patientOptions(select, true);
-    const records = state.procedures.filter((record) => !select.value || record.patientId === select.value).sort((a, b) => b.date.localeCompare(a.date));
-    $("#timeline-list").innerHTML = records.map((record) => {
-      const patient = state.patients.find((item) => item.id === record.patientId);
+    const patientId = activePatientId;
+    const procedures = state.procedures.filter((record) => record.patientId === patientId);
+    const photos = state.photos.filter((photo) => photo.patientId === patientId);
+    const appointments = state.appointments.filter((item) => item.patientId === patientId).sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt));
+    const appointmentRecords = appointments.map((appointment) => {
+      const linkedProcedures = procedures.filter((record) => record.appointmentId === appointment.id);
+      const linkedPhotos = photos.filter((photo) => photo.appointmentId === appointment.id);
+      const procedureMarkup = linkedProcedures.map((record) => {
+        const tags = [record.category, record.product && `Produto: ${record.product}`, record.lot && `Lote: ${record.lot}`, record.expiry && `Validade: ${formatDate(record.expiry)}`, record.dosage && `Dosagem: ${record.dosage}`].filter(Boolean);
+        return `<div class="linked-record"><strong>${escapeHTML(record.procedure)}</strong>${record.notes ? `<p>${escapeHTML(record.notes)}</p>` : ""}<div class="timeline-tags">${tags.map((tag) => `<span class="timeline-tag">${escapeHTML(tag)}</span>`).join("")}${record.points?.length ? `<span class="timeline-tag">${record.points.length} ponto(s) facial(is)</span>` : ""}</div></div>`;
+      }).join("");
+      return `<article class="timeline-record"><div class="timeline-date">${formatDateTime(appointment.scheduledAt)} · ${escapeHTML(appointmentStatus(appointment.status))}</div><h3>${escapeHTML(appointment.service)}</h3>${appointment.notes ? `<p>${escapeHTML(appointment.notes)}</p>` : ""}${procedureMarkup}${linkedPhotos.length ? `<button class="text-button" type="button" data-patient-tab="photos">${linkedPhotos.length} fotografia(s) vinculada(s) · ver evolução visual →</button>` : ""}</article>`;
+    });
+    const standaloneProcedures = procedures.filter((record) => !record.appointmentId).map((record) => {
       const tags = [record.category, record.product && `Produto: ${record.product}`, record.lot && `Lote: ${record.lot}`, record.expiry && `Validade: ${formatDate(record.expiry)}`, record.dosage && `Dosagem: ${record.dosage}`].filter(Boolean);
-      return `<article class="timeline-record"><div class="timeline-date">${formatDate(record.date)}</div><h3>${escapeHTML(record.procedure)} · ${escapeHTML(patient?.name || "Paciente removida")}</h3>${record.notes ? `<p>${escapeHTML(record.notes)}</p>` : ""}<div class="timeline-tags">${tags.map((tag) => `<span class="timeline-tag">${escapeHTML(tag)}</span>`).join("")}${record.points?.length ? `<span class="timeline-tag">${record.points.length} ponto(s) facial(is)</span>` : ""}</div></article>`;
-    }).join("") || '<div class="empty-state">Nenhum procedimento registrado para esta seleção.</div>';
+      return `<article class="timeline-record"><div class="timeline-date">${formatDate(record.date)} · Procedimento sem atendimento vinculado</div><h3>${escapeHTML(record.procedure)}</h3>${record.notes ? `<p>${escapeHTML(record.notes)}</p>` : ""}<div class="timeline-tags">${tags.map((tag) => `<span class="timeline-tag">${escapeHTML(tag)}</span>`).join("")}${record.points?.length ? `<span class="timeline-tag">${record.points.length} ponto(s) facial(is)</span>` : ""}</div></article>`;
+    });
+    $("#patient-timeline").innerHTML = [...appointmentRecords, ...standaloneProcedures].join("") || '<div class="empty-state">Nenhum atendimento ou procedimento registrado para esta paciente.</div>';
   }
 
   function renderGallery() {
-    const select = $("#gallery-patient");
-    patientOptions(select, true);
-    const photos = state.photos.filter((photo) => !select.value || photo.patientId === select.value).sort((a, b) => b.date.localeCompare(a.date));
-    $("#gallery-grid").innerHTML = photos.map((photo) => {
-      const patient = state.patients.find((item) => item.id === photo.patientId);
-      return `<article class="photo-card"><img src="${escapeHTML(photo.image)}" alt="${escapeHTML(`${photo.stage} - ${patient?.name || "Paciente"}`)}"><div class="photo-info"><span class="photo-stage">${escapeHTML(photo.stage)}</span><strong>${escapeHTML(patient?.name || "Paciente removida")}</strong><small>${formatDate(photo.date)}${photo.caption ? ` · ${escapeHTML(photo.caption)}` : ""}</small></div></article>`;
+    const photos = state.photos.filter((photo) => photo.patientId === activePatientId).sort((a, b) => b.date.localeCompare(a.date));
+    $("#patient-gallery-grid").innerHTML = photos.map((photo) => {
+      const appointment = state.appointments.find((item) => item.id === photo.appointmentId);
+      return `<article class="photo-card"><img src="${escapeHTML(photo.image)}" alt="${escapeHTML(`${photo.stage} - evolução visual da paciente`)}"><div class="photo-info"><span class="photo-stage">${escapeHTML(photo.stage)}</span><strong>${escapeHTML(appointment ? appointment.service : "Registro clínico")}</strong><small>${formatDate(photo.date)}${photo.caption ? ` · ${escapeHTML(photo.caption)}` : ""}${appointment ? ` · ${escapeHTML(formatDateTime(appointment.scheduledAt))}` : ""}</small></div></article>`;
     }).join("") || '<div class="empty-inline photo-empty">Nenhuma fotografia adicionada ainda.</div>';
+  }
+
+  function renderPatientDetail() {
+    const patient = state.patients.find((item) => item.id === activePatientId);
+    if (!patient) return;
+    $("#patient-detail-name").textContent = patient.name;
+    $("#patient-detail-subtitle").textContent = `Paciente desde ${formatDate(patient.createdAt)}${patient.phone ? ` · ${patient.phone}` : ""}`;
+    const details = [
+      ["Data de nascimento", formatDate(patient.birthDate)],
+      ["Telefone", patient.phone || "—"],
+      ["E-mail", patient.email || "—"],
+      ["Alergias", patient.allergies || "Não informado"],
+      ["Medicamentos", patient.medications || "Não informado"],
+      ["Condições relevantes", patient.conditions || "Não informado"],
+      ["Gestação/amamentação", patient.pregnant ? "Sim" : "Não"],
+      ["Observações", patient.notes || "Nenhuma"],
+    ];
+    $("#patient-profile").innerHTML = `<div class="panel-heading"><div><h2>Anamnese</h2><p>${patient.reviewedAt ? `Revisada em ${formatDate(patient.reviewedAt)}` : "Ainda não revisada"}</p></div><span class="status-pill ${patient.reviewedAt ? "status-ok" : "status-review"}">${patient.reviewedAt ? "Atualizada" : "Revisar"}</span></div><div class="patient-facts">${details.map(([label, value]) => `<div class="patient-fact"><span>${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong></div>`).join("")}</div>`;
+    $("#photo-patient").value = patient.id;
+    appointmentOptions($("#photo-appointment"), patient.id);
+    renderTimeline();
+    renderGallery();
+  }
+
+  function showPatientDetail(id) {
+    if (!state.patients.some((patient) => patient.id === id)) return;
+    activePatientId = id;
+    $("#patient-list-view").hidden = true;
+    $("#patient-detail-view").hidden = false;
+    setPatientTab("record");
+    renderPatientDetail();
+  }
+
+  function showPatientList() {
+    activePatientId = "";
+    $("#patient-detail-view").hidden = true;
+    $("#patient-list-view").hidden = false;
+  }
+
+  function setPatientTab(tab) {
+    const showPhotos = tab === "photos";
+    $("#patient-record-panel").hidden = showPhotos;
+    $("#patient-photos-panel").hidden = !showPhotos;
+    document.querySelectorAll(".detail-tab").forEach((button) => button.classList.toggle("active", button.dataset.patientTab === tab));
+    if (showPhotos) renderGallery();
+  }
+
+  function renderAppointments() {
+    const selectedDay = $("#appointment-day").value;
+    const appointments = state.appointments
+      .filter((item) => !selectedDay || localDate(new Date(item.scheduledAt)) === selectedDay)
+      .sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
+    $("#appointment-list").innerHTML = appointments.map((appointment) => {
+      const procedures = state.procedures.filter((record) => record.appointmentId === appointment.id);
+      const photos = state.photos.filter((photo) => photo.appointmentId === appointment.id);
+      const history = [
+        ...procedures.map((record) => `<span class="timeline-tag">${escapeHTML(record.procedure)}</span>`),
+        photos.length ? `<span class="timeline-tag">${photos.length} fotografia(s)</span>` : "",
+      ].filter(Boolean).join("");
+      return `<article class="appointment-card">
+        <div class="appointment-main"><div class="timeline-date">${formatDateTime(appointment.scheduledAt)}</div><h3>${escapeHTML(appointment.service)}</h3><button class="text-button appointment-patient" type="button" data-open-patient="${escapeHTML(appointment.patientId)}">${escapeHTML(appointment.patientName)} · Abrir ficha →</button>${appointment.notes ? `<p>${escapeHTML(appointment.notes)}</p>` : ""}${history ? `<div class="timeline-tags">${history}</div>` : '<small class="muted">Nenhum procedimento ou foto vinculado ainda.</small>'}</div>
+        <div class="appointment-actions"><label class="field">Status<select data-appointment-status="${escapeHTML(appointment.id)}"><option value="scheduled" ${appointment.status === "scheduled" ? "selected" : ""}>Agendado</option><option value="completed" ${appointment.status === "completed" ? "selected" : ""}>Realizado</option><option value="cancelled" ${appointment.status === "cancelled" ? "selected" : ""}>Cancelado</option></select></label><button class="button button-outline" type="button" data-edit-appointment="${escapeHTML(appointment.id)}">Editar</button></div>
+      </article>`;
+    }).join("") || '<div class="empty-state">Nenhum atendimento nesta data.</div>';
   }
 
   async function reviewPatient(id) {
@@ -228,13 +324,43 @@
     $("#point-count").textContent = `${canvasPoints.length} ${canvasPoints.length === 1 ? "ponto marcado" : "pontos marcados"}`;
   }
 
+  function resetAppointmentForm() {
+    const form = $("#appointment-form");
+    form.reset();
+    editingAppointmentId = "";
+    $("#appointment-patient").disabled = false;
+    $("#appointment-form-title").textContent = "Novo atendimento";
+    $("#appointment-submit").textContent = "Agendar atendimento";
+    $("#cancel-appointment-edit").hidden = true;
+    $("#appointment-date").value = localDateTime();
+  }
+
+  function editAppointment(id) {
+    const appointment = state.appointments.find((item) => item.id === id);
+    if (!appointment) return;
+    showPage("appointments");
+    editingAppointmentId = id;
+    $("#appointment-patient").value = appointment.patientId;
+    $("#appointment-patient").disabled = true;
+    $("#appointment-form").elements.service.value = appointment.service;
+    $("#appointment-form").elements.scheduledAt.value = localDateTime(new Date(appointment.scheduledAt));
+    $("#appointment-form").elements.notes.value = appointment.notes;
+    $("#appointment-form-title").textContent = "Editar atendimento";
+    $("#appointment-submit").textContent = "Salvar alterações";
+    $("#cancel-appointment-edit").hidden = false;
+    $("#appointment-form").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   function renderAll() {
     renderPatientRows($("#patient-search").value);
     renderDashboard();
     patientOptions($("#procedure-patient"));
-    patientOptions($("#photo-patient"));
-    renderTimeline();
-    renderGallery();
+    patientOptions($("#appointment-patient"));
+    appointmentOptions($("#procedure-appointment"), $("#procedure-patient").value);
+    $("#photo-patient").value = activePatientId;
+    appointmentOptions($("#photo-appointment"), activePatientId);
+    if (activePatientId) renderPatientDetail();
+    renderAppointments();
   }
 
   function resizeImage(file) {
@@ -268,8 +394,19 @@
   $("#cancel-dialog")?.addEventListener("click", () => $("#patient-dialog").close());
   $("#patient-search").addEventListener("input", (event) => renderPatientRows(event.target.value));
   $("#patient-rows").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-review]");
-    if (button) reviewPatient(button.dataset.review);
+    const openButton = event.target.closest("[data-open-patient]");
+    const reviewButton = event.target.closest("[data-review]");
+    if (openButton) showPatientDetail(openButton.dataset.openPatient);
+    else if (reviewButton) reviewPatient(reviewButton.dataset.review);
+  });
+  $("#back-to-patients").addEventListener("click", showPatientList);
+  $("#patient-detail-view").addEventListener("click", (event) => {
+    const tabButton = event.target.closest("[data-patient-tab]");
+    if (tabButton) setPatientTab(tabButton.dataset.patientTab);
+  });
+  $("#print-patient-record").addEventListener("click", () => {
+    setPatientTab("record");
+    window.print();
   });
   $("#alert-list").addEventListener("click", (event) => {
     const button = event.target.closest("[data-review]");
@@ -309,6 +446,7 @@
     const data = new FormData(form);
     const record = {
       patientId: data.get("patientId"),
+      appointmentId: data.get("appointmentId"),
       category: data.get("category"),
       procedure: data.get("procedure").trim(),
       product: data.get("product").trim(),
@@ -333,6 +471,61 @@
       showToast(error.message, true);
     }
   });
+  $("#procedure-patient").addEventListener("change", (event) => {
+    appointmentOptions($("#procedure-appointment"), event.target.value);
+  });
+  $("#appointment-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const isEditing = Boolean(editingAppointmentId);
+    const appointment = {
+      service: data.get("service").trim(),
+      scheduledAt: data.get("scheduledAt"),
+      notes: data.get("notes").trim(),
+    };
+    const url = isEditing ? `/api/appointments/${encodeURIComponent(editingAppointmentId)}/` : "/api/appointments/";
+    if (!isEditing) appointment.patientId = data.get("patientId");
+    try {
+      await api(url, { method: isEditing ? "PATCH" : "POST", body: JSON.stringify(appointment) });
+      await loadState();
+      $("#appointment-day").value = appointment.scheduledAt.slice(0, 10);
+      resetAppointmentForm();
+      renderAll();
+      showToast(isEditing ? "Atendimento atualizado." : "Atendimento agendado.");
+    } catch (error) {
+      console.error("Não foi possível salvar o atendimento.", error);
+      showToast(error.message, true);
+    }
+  });
+  $("#cancel-appointment-edit").addEventListener("click", resetAppointmentForm);
+  $("#appointment-day").addEventListener("change", renderAppointments);
+  $("#appointment-list").addEventListener("click", (event) => {
+    const editButton = event.target.closest("[data-edit-appointment]");
+    const patientButton = event.target.closest("[data-open-patient]");
+    if (editButton) editAppointment(editButton.dataset.editAppointment);
+    if (patientButton) {
+      showPage("patients");
+      showPatientDetail(patientButton.dataset.openPatient);
+    }
+  });
+  $("#appointment-list").addEventListener("change", async (event) => {
+    const select = event.target.closest("[data-appointment-status]");
+    if (!select) return;
+    try {
+      await api(`/api/appointments/${encodeURIComponent(select.dataset.appointmentStatus)}/`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: select.value }),
+      });
+      await loadState();
+      renderAll();
+      showToast("Status do atendimento atualizado.");
+    } catch (error) {
+      console.error("Não foi possível atualizar o atendimento.", error);
+      showToast(error.message, true);
+      renderAppointments();
+    }
+  });
   $("#face-canvas").addEventListener("click", (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
     canvasPoints.push({ x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height });
@@ -342,9 +535,6 @@
     canvasPoints = [];
     drawFace();
   });
-  $("#timeline-patient").addEventListener("change", renderTimeline);
-  $("#gallery-patient").addEventListener("change", renderGallery);
-  $("#print-timeline").addEventListener("click", () => window.print());
   $("#photo-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -357,6 +547,7 @@
     try {
       const photo = {
         patientId: data.get("patientId"),
+        appointmentId: data.get("appointmentId"),
         stage: data.get("stage"),
         date: data.get("date"),
         caption: data.get("caption").trim(),
@@ -366,28 +557,24 @@
       await loadState();
       form.reset();
       $("#photo-date").value = localDate();
-      renderGallery();
-      showToast("Fotografia adicionada à galeria.");
+      $("#photo-patient").value = activePatientId;
+      appointmentOptions($("#photo-appointment"), activePatientId);
+      renderPatientDetail();
+      showToast("Fotografia adicionada à evolução visual.");
     } catch (error) {
       console.error("Falha ao adicionar fotografia.", error);
       showToast(error.message || "Não foi possível processar a fotografia.", true);
     }
   });
   window.addEventListener("resize", resizeCanvas);
-  window.addEventListener("beforeprint", () => {
-    document.querySelectorAll(".page").forEach((page) => page.dataset.wasActive = page.classList.contains("active"));
-    showPage("timeline");
-  });
-  window.addEventListener("afterprint", () => {
-    const active = [...document.querySelectorAll(".page")].find((page) => page.dataset.wasActive === "true");
-    if (active) showPage(active.id.replace("page-", ""));
-  });
 
   loadState().then(() => {
     $("#app-content").hidden = false;
+    $("#appointment-day").value = localDate();
     renderAll();
     $("#procedure-date").value = localDate();
     $("#photo-date").value = localDate();
+    $("#appointment-date").value = localDateTime();
     resizeCanvas();
   }).catch((error) => {
     console.error("Não foi possível carregar os dados da clínica.", error);
